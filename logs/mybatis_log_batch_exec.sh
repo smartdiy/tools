@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Usage:
-#   ./mybatis_log_split_sql.sh application.log sql_out
+#   ./mybatis_log_split_sql_values.sh application.log sql_out
 
 LOG_FILE="$1"
 OUT_DIR="$2"
@@ -14,37 +14,41 @@ fi
 mkdir -p "$OUT_DIR"
 
 awk -v outdir="$OUT_DIR" '
-# -------- helpers --------
+# ---------- helpers ----------
 function trim(s) {
   gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
   return s
 }
 
-function is_string(t) {
-  return t ~ /String|Char|Text|UUID|Date|Time|Timestamp/i
-}
-
-function is_decimal(t) {
-  return t ~ /BigDecimal|Decimal|Numeric|Double|Float/i
+function is_number(v) {
+  return v ~ /^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$/
 }
 
 function normalize(v) {
   return (v ~ /[eE]/) ? (v + 0) : v
 }
 
-# -------- init --------
+# ---------- init ----------
 BEGIN {
   idx = 1
 }
 
-# -------- capture SQL --------
+# ---------- capture SQL ----------
 /Preparing:/ {
   sql = $0
   sub(/.*Preparing:[[:space:]]*/, "", sql)
+
+  # remove {} blocks
+  gsub(/[{}]/, "", sql)
+
+  # remove (?, ?, ?) placeholders
+  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/, "", sql)
+
+  sql = trim(sql)
   next
 }
 
-# -------- capture params & write file --------
+# ---------- capture parameters & write file ----------
 /Parameters:/ && sql != "" {
   file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
@@ -52,35 +56,32 @@ BEGIN {
 
   n = split(line, a, ", ")
 
-  print sql > file
-
+  # build a comma-separated list of values
+  vals = ""
   for (i = 1; i <= n; i++) {
-    entry = trim(a[i])
+    val = trim(a[i])
 
-    if (tolower(entry) == "null") {
-      printf "%s@p%d = NULL\n", (i==1?" ":" ,"), i >> file
-      continue
+    if (tolower(val) == "null") {
+      val_out = "NULL"
+    } else {
+      # remove (Type) if exists
+      sub(/\([^)]+\)$/, "", val)
+      val = trim(val)
+
+      if (is_number(val)) {
+        val_out = normalize(val)
+      } else {
+        # escape single quotes inside string
+        gsub(/'\''/, "''''", val)
+        val_out = "'" val "'"
+      }
     }
 
-    type = entry
-    sub(/^.*\(/, "", type)
-    sub(/\)$/, "", type)
-
-    val = entry
-    sub(/\([^)]+\)$/, "", val)
-    val = trim(val)
-
-    if (is_string(type)) {
-      gsub(/'\''/, "''''", val)
-      val = "'" val "'"
-    } else if (is_decimal(type)) {
-      val = normalize(val)
-    }
-
-    printf "%s@p%d = %s\n", (i==1?" ":" ,"), i, val >> file
+    vals = vals (i==1?"":", ") val_out
   }
 
-  print ";" >> file
+  # write SQL with values directly inserted
+  print sql "(" vals ");" > file
 
   close(file)
   sql = ""
