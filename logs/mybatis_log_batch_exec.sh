@@ -11,100 +11,104 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 awk -v outdir="$OUTPUT_DIR" '
-function trim(s){gsub(/^[ \t]+|[ \t]+$/, "", s); return s}
-function is_string(type){return type ~ /(String|Date|Time|Timestamp|Char|Text|UUID)/}
-function is_decimal(type){return type ~ /(BigDecimal|Decimal|Numeric|Double|Float)/}
-function normalize_number(v){
-  if(v ~ /[eE]/) return sprintf("%.18f", v)+0
+# ---------- helpers ----------
+function trim(s) {
+  gsub(/^[ \t]+|[ \t]+$/, "", s)
+  return s
+}
+
+function is_string(type) {
+  return type ~ /(String|Date|Time|Timestamp|Char|Text|UUID|VARCHAR|NVARCHAR)/
+}
+
+function is_decimal(type) {
+  return type ~ /(BigDecimal|Decimal|Numeric|Double|Float)/
+}
+
+function normalize_number(v) {
+  if (v ~ /[eE]/)
+    return sprintf("%.18f", v) + 0
   return v
 }
 
-function save_exec(){
-  if(sql=="") return
-  fname = sprintf("%s/exec_%s_%03d.sql", outdir, gsub_ts, exec_count)
+# ---------- save one EXEC ----------
+function save_exec() {
+  if (sql == "") return
+
+  fname = sprintf("%s/exec_%s_%03d.sql", outdir, ts_compact, exec_count)
   exec_count++
 
-  print "-- " ts " | " mapper > fname
-  for(i=1;i<=param_count;i++){
-    if(param_value[i]=="OUT")
+  print "-- Generated from MyBatis log" > fname
+  if (ts != "")     print "-- Time   : " ts     >> fname
+  if (mapper != "") print "-- Mapper : " mapper >> fname
+  print "" >> fname
+
+  # DECLARE OUT params
+  for (i = 1; i <= param_count; i++) {
+    if (param_mode[i] == "OUT") {
       print "DECLARE @p" i " INT;" >> fname
+    }
   }
 
-  print "" >> fname
+  if (out_count > 0) print "" >> fname
+
   print sql >> fname
 
-  first=1
-  for(i=1;i<=param_count;i++){
-    prefix = first?"     ":"     ,"
-    first=0
-    if(param_value[i]=="OUT")
+  first = 1
+  for (i = 1; i <= param_count; i++) {
+    prefix = first ? "     " : "     ,"
+    first = 0
+
+    if (param_mode[i] == "OUT") {
       print prefix "@p" i " = @p" i " OUTPUT" >> fname
-    else
+    } else {
       print prefix "@p" i " = " param_value[i] >> fname
+    }
   }
+
   print ";" >> fname
 
-  for(i=1;i<=param_count;i++)
-    if(param_value[i]=="OUT")
+  # SELECT OUT params
+  for (i = 1; i <= param_count; i++) {
+    if (param_mode[i] == "OUT") {
       print "SELECT @p" i " AS p" i ";" >> fname
-
-  # reset
-  sql=""
-  param_count=0
-}
-
-# reset counters
-BEGIN{exec_count=1; gsub_ts=""; sql=""; param_count=0; mapper=""}
-
-# capture timestamp + mapper (if present)
-/^[0-9]{4}-[0-9]{2}-[0-9]{2}/{
-  ts = substr($0,1,19)
-  gsub_ts = gensub(/[^0-9]/,"","g",ts)
-  if(match($0, /[A-Za-z0-9_]+Mapper/))
-    mapper = substr($0,RSTART,RLENGTH)
-}
-
-# Preparing line
-/Preparing:/{
-  save_exec()
-  sql=$0
-  sub(/.*Preparing:[ \t]*/, "", sql)
-  collecting=1
-  param_count=0
-  delete param_value
-  next
-}
-
-# Parameters line
-/Parameters:/ && collecting{
-  params=$0
-  sub(/.*Parameters:[ \t]*/, "", params)
-  split(params, arr, ", ")
-
-  for(i=1;i<=length(arr);i++){
-    val=arr[i]
-    param_count++
-    if(val ~ /^null/i){
-      param_value[param_count]="OUT"
-      continue
     }
-    match(val,/^[^(]+/)
-    v=trim(substr(val,RSTART,RLENGTH))
-    match(val, /\(([^)]+)\)/, t)
-    type=t[1]
-
-    if(v != "NULL" && is_string(type)){
-      gsub(/'\''/,"''''",v)
-      v="'" v "'"
-    } else if(v != "NULL" && is_decimal(type)){
-      v=normalize_number(v)
-    }
-
-    param_value[param_count]=v
   }
 
-  collecting=0
+  # reset state
+  sql = ""
+  param_count = 0
+  out_count = 0
+  delete param_value
+  delete param_mode
 }
 
-END{save_exec()}
-' "$LOG_FILE"
+# ---------- init ----------
+BEGIN {
+  exec_count = 1
+  sql = ""
+  param_count = 0
+  out_count = 0
+  ts = ""
+  ts_compact = ""
+  mapper = ""
+}
+
+# ---------- capture timestamp / mapper ----------
+/^[0-9]{4}-[0-9]{2}-[0-9]{2}/ {
+  ts = substr($0, 1, 19)
+  ts_compact = ts
+  gsub(/[^0-9]/, "", ts_compact)
+
+  if (match($0, /[A-Za-z0-9_]+Mapper/))
+    mapper = substr($0, RSTART, RLENGTH)
+}
+
+# ---------- Preparing ----------
+/Preparing:/ {
+  save_exec()
+
+  sql = $0
+  sub(/.*Preparing:[ \t]*/, "", sql)
+
+  param_coun_
