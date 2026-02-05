@@ -12,8 +12,7 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-awk -v outdir="$OUTPUT_DIR" '
-
+awk -v outdir="$OUTPUT_DIR" <<'AWK'
 # ---------- utils ----------
 function trim(s) {
   gsub(/^[ \t\r\n]+/, "", s)
@@ -133,7 +132,7 @@ BEGIN {
     val = trim(val)
 
     if (is_string(type)) {
-      gsub(/'\''/, "''''", val)
+      gsub(/'/, "''", val)
       val = "'" val "'"
     } else if (is_decimal(type)) {
       val = normalize_number(val)
@@ -149,5 +148,5 @@ BEGIN {
 END {
   flush_exec()
 }
+AWK
 
-' "$LOG_FILE"
