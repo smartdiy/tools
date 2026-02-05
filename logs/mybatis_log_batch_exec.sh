@@ -15,18 +15,28 @@ function trim(s) { gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s); return s }
 function is_number(s) { return s ~ /^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$/ }
 function normalize(s) { return (s ~ /[eE]/) ? (s+0) : s }
 
+# replace single quotes inside strings
+function escape_single_quotes(s,   i, c, out) {
+    out=""
+    for(i=1;i<=length(s);i++){
+        c=substr(s,i,1)
+        if(c=="'") out = out "''"
+        else out = out c
+    }
+    return out
+}
+
 BEGIN { idx=1 }
 
 /Preparing:/ {
   sql = $0
-  sub(/.*Preparing:[[:space:]]*/, "", sql)
+  sub(/.*Preparing:[[:space:]]*/,"",sql)
   gsub(/[{}]/,"",sql)
   gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/,"",sql)
   sql=trim(sql)
   next
 }
 
-# Process Parameters
 /Parameters:/ && sql != "" {
   file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
@@ -34,21 +44,20 @@ BEGIN { idx=1 }
   n = split(line, arr, ", ")
 
   vals=""
-  for(i=1;i<=n;i++) {
+  for(i=1;i<=n;i++){
     raw = trim(arr[i])
     val = raw
-
-    # remove type annotation
+    # remove (Type)
     sub(/\([^)]+\)$/,"",val)
     val = trim(val)
 
-    if(tolower(val) == "null") {
-      val_out = "NULL"
-    } else if(is_number(val)) {
-      val_out = normalize(val)
+    if(tolower(val)=="null"){
+        val_out="NULL"
+    } else if(is_number(val)){
+        val_out=normalize(val)
     } else {
-      gsub(/'\''/,"''''",val)      # escape single quotes inside string
-      val_out = sprintf("'%s'", val)  # safe string quoting
+        val_clean = escape_single_quotes(val)
+        val_out = sprintf("%c%s%c", 39, val_clean, 39)
     }
 
     vals = vals (i==1?"":", ") val_out
