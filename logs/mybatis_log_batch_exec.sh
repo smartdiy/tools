@@ -16,12 +16,12 @@ function trim(s) {
   return s
 }
 
-function is_number(v) {
-  return v ~ /^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$/
+function is_number(s) {
+  return s ~ /^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$/
 }
 
-function normalize(v) {
-  return (v ~ /[eE]/) ? (v + 0) : v
+function normalize(s) {
+  return (s ~ /[eE]/) ? (s+0) : s
 }
 
 BEGIN { idx = 1 }
@@ -30,42 +30,44 @@ BEGIN { idx = 1 }
 /Preparing:/ {
   sql = $0
   sub(/.*Preparing:[[:space:]]*/, "", sql)
-  gsub(/[{}]/, "", sql)                       # remove {}
-  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/, "", sql) # remove placeholders
+  gsub(/[{}]/, "", sql)
+  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/, "", sql)
   sql = trim(sql)
   next
 }
 
-# Capture parameters and write file
+# Capture parameters and write batch file
 /Parameters:/ && sql != "" {
   file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
   sub(/.*Parameters:[[:space:]]*/, "", line)
-  n = split(line, a, ", ")
+  n = split(line, arr, ", ")
 
   vals = ""
   for (i = 1; i <= n; i++) {
-    raw = trim(a[i])
+    raw = trim(arr[i])
 
-    # null
     if (tolower(raw) == "null") {
       val_out = "NULL"
     } else {
-      # remove type annotation like (String), (Long), (BigDecimal)
-      sub(/\([^)]+\)$/, "", raw)
-      val = trim(raw)
+      # strip (Type) annotation
+      val_clean = raw
+      sub(/\([^)]+\)$/, "", val_clean)
+      val_clean = trim(val_clean)
 
-      if (is_number(val)) {
-        val_out = normalize(val)
+      if (is_number(val_clean)) {
+        val_out = normalize(val_clean)
       } else {
-        gsub(/'\''/, "''''", val)   # escape single quotes
-        val_out = "'" val "'"
+        # escape single quotes inside the string
+        gsub(/'\''/, "''''", val_clean)
+        val_out = "'" val_clean "'"
       }
     }
 
     vals = vals (i==1?"":", ") val_out
   }
 
+  # print SQL + values directly, no parentheses
   print sql " " vals ";" > file
   close(file)
   sql = ""
