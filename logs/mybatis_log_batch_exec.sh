@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 LOG_FILE="$1"
 OUTPUT_DIR="$2"
 
-if [[ -z "$LOG_FILE" || ! -f "$LOG_FILE" || -z "$OUTPUT_DIR" ]]; then
+if [ $# -ne 2 ] || [ ! -f "$LOG_FILE" ]; then
   echo "Usage: $0 mybatis.log output_dir"
   exit 1
 fi
@@ -11,18 +13,20 @@ fi
 mkdir -p "$OUTPUT_DIR"
 
 awk -v outdir="$OUTPUT_DIR" '
-# ---------- helpers ----------
+
+# ---------- utils ----------
 function trim(s) {
-  gsub(/^[ \t]+|[ \t]+$/, "", s)
+  gsub(/^[ \t\r\n]+/, "", s)
+  gsub(/[ \t\r\n]+$/, "", s)
   return s
 }
 
-function is_string(type) {
-  return type ~ /(String|Date|Time|Timestamp|Char|Text|UUID|VARCHAR|NVARCHAR)/
+function is_string(t) {
+  return t ~ /(String|Char|Text|UUID|Date|Time|Timestamp|VARCHAR|NVARCHAR)/i
 }
 
-function is_decimal(type) {
-  return type ~ /(BigDecimal|Decimal|Numeric|Double|Float)/
+function is_decimal(t) {
+  return t ~ /(BigDecimal|Decimal|Numeric|Double|Float)/i
 }
 
 function normalize_number(v) {
@@ -31,70 +35,56 @@ function normalize_number(v) {
   return v
 }
 
-# ---------- save one EXEC ----------
-function save_exec() {
+# ---------- flush ----------
+function flush_exec() {
   if (sql == "") return
 
-  fname = sprintf("%s/exec_%s_%03d.sql", outdir, ts_compact, exec_count)
-  exec_count++
+  file = sprintf("%s/exec_%s_%03d.sql", outdir, ts_compact, exec_no++)
+  print "-- Generated from MyBatis log" > file
+  if (ts != "")     print "-- Time   : " ts >> file
+  if (mapper != "") print "-- Mapper : " mapper >> file
+  print "" >> file
 
-  print "-- Generated from MyBatis log" > fname
-  if (ts != "")     print "-- Time   : " ts     >> fname
-  if (mapper != "") print "-- Mapper : " mapper >> fname
-  print "" >> fname
-
-  # DECLARE OUT params
-  for (i = 1; i <= param_count; i++) {
-    if (param_mode[i] == "OUT") {
-      print "DECLARE @p" i " INT;" >> fname
-    }
+  for (i = 1; i <= param_cnt; i++) {
+    if (param_mode[i] == "OUT")
+      print "DECLARE @p" i " INT;" >> file
   }
 
-  if (out_count > 0) print "" >> fname
+  if (out_cnt > 0) print "" >> file
 
-  print sql >> fname
+  print sql >> file
 
-  first = 1
-  for (i = 1; i <= param_count; i++) {
-    prefix = first ? "     " : "     ,"
-    first = 0
-
-    if (param_mode[i] == "OUT") {
-      print prefix "@p" i " = @p" i " OUTPUT" >> fname
-    } else {
-      print prefix "@p" i " = " param_value[i] >> fname
-    }
+  sep = " "
+  for (i = 1; i <= param_cnt; i++) {
+    if (param_mode[i] == "OUT")
+      printf "%s@p%d = @p%d OUTPUT\n", sep, i, i >> file
+    else
+      printf "%s@p%d = %s\n", sep, i, param_val[i] >> file
+    sep = ","
   }
 
-  print ";" >> fname
+  print ";" >> file
 
-  # SELECT OUT params
-  for (i = 1; i <= param_count; i++) {
-    if (param_mode[i] == "OUT") {
-      print "SELECT @p" i " AS p" i ";" >> fname
-    }
+  for (i = 1; i <= param_cnt; i++) {
+    if (param_mode[i] == "OUT")
+      print "SELECT @p" i " AS p" i ";" >> file
   }
 
-  # reset state
+  # reset
   sql = ""
-  param_count = 0
-  out_count = 0
-  delete param_value
+  param_cnt = out_cnt = 0
+  delete param_val
   delete param_mode
 }
 
 # ---------- init ----------
 BEGIN {
-  exec_count = 1
+  exec_no = 1
   sql = ""
-  param_count = 0
-  out_count = 0
-  ts = ""
-  ts_compact = ""
-  mapper = ""
+  collecting = 0
 }
 
-# ---------- capture timestamp / mapper ----------
+# ---------- timestamp / mapper ----------
 /^[0-9]{4}-[0-9]{2}-[0-9]{2}/ {
   ts = substr($0, 1, 19)
   ts_compact = ts
@@ -106,9 +96,58 @@ BEGIN {
 
 # ---------- Preparing ----------
 /Preparing:/ {
-  save_exec()
+  flush_exec()
 
   sql = $0
   sub(/.*Preparing:[ \t]*/, "", sql)
 
-  param_coun_
+  param_cnt = out_cnt = 0
+  collecting = 1
+  next
+}
+
+# ---------- Parameters ----------
+/Parameters:/ && collecting {
+  line = $0
+  sub(/.*Parameters:[ \t]*/, "", line)
+
+  n = split(line, arr, ", ")
+
+  for (i = 1; i <= n; i++) {
+    param_cnt++
+    entry = trim(arr[i])
+
+    if (tolower(entry) == "null") {
+      param_mode[param_cnt] = "OUT"
+      param_val[param_cnt]  = "NULL"
+      out_cnt++
+      continue
+    }
+
+    type = entry
+    sub(/^.*\(/, "", type)
+    sub(/\)$/, "", type)
+
+    val = entry
+    sub(/\([^)]+\)$/, "", val)
+    val = trim(val)
+
+    if (is_string(type)) {
+      gsub(/'\''/, "''''", val)
+      val = "'" val "'"
+    } else if (is_decimal(type)) {
+      val = normalize_number(val)
+    }
+
+    param_mode[param_cnt] = "IN"
+    param_val[param_cnt]  = val
+  }
+
+  collecting = 0
+}
+
+END {
+  flush_exec()
+}
+
+' "$LOG_FILE"
