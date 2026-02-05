@@ -15,44 +15,41 @@ function trim(s) { gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s); return s }
 function is_number(s) { return s ~ /^-?[0-9]+(\.[0-9]+)?([eE]-?[0-9]+)?$/ }
 function normalize(s) { return (s ~ /[eE]/) ? (s+0) : s }
 
-BEGIN { idx = 1 }
+BEGIN { idx=1 }
 
+# Capture SQL
 /Preparing:/ {
   sql = $0
   sub(/.*Preparing:[[:space:]]*/, "", sql)
-  gsub(/[{}]/,"",sql)  # remove {}
-  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/,"",sql)  # remove (?,?)
-  sql = trim(sql)
+  gsub(/[{}]/,"",sql)   # remove {}
+  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/,"",sql) # remove (?,?)
+  sql=trim(sql)
   next
 }
 
+# Capture parameters and write SQL file
 /Parameters:/ && sql != "" {
   file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
-  sub(/.*Parameters:[[:space:]]*/, "", line)
-
+  sub(/.*Parameters:[[:space:]]*/,"",line)
   n = split(line, arr, ", ")
-  vals = ""
 
-  for (i=1; i<=n; i++) {
+  vals=""
+  for(i=1;i<=n;i++) {
     raw = trim(arr[i])
+    val = raw
 
-    # Remove (Type)
-    if (match(raw, /\([^)]+\)$/)) {
-      val = substr(raw, 1, RSTART-1)
-      val = trim(val)
-    } else {
-      val = raw
-    }
+    # remove type annotation (String, Long, BigDecimal)
+    sub(/\([^)]+\)$/, "", val)
+    val = trim(val)
 
-    # Determine output
-    if (tolower(val) == "null") {
-      val_out = "NULL"
-    } else if (is_number(val)) {
-      val_out = normalize(val)
+    if(tolower(val)=="null") {
+      val_out="NULL"
+    } else if(is_number(val)) {
+      val_out=normalize(val)
     } else {
-      gsub(/'\''/, "''''", val)  # escape single quotes
-      val_out = "'" val "'"
+      gsub(/'\''/,"''''", val)   # escape single quotes
+      val_out="'" val "'"
     }
 
     vals = vals (i==1?"":", ") val_out
@@ -60,6 +57,6 @@ BEGIN { idx = 1 }
 
   print sql " " vals ";" > file
   close(file)
-  sql = ""
+  sql=""
 }
 ' "$LOG_FILE"
