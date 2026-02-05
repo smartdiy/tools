@@ -17,17 +17,16 @@ function normalize(s) { return (s ~ /[eE]/) ? (s+0) : s }
 
 BEGIN { idx=1 }
 
-# Capture SQL
 /Preparing:/ {
   sql = $0
   sub(/.*Preparing:[[:space:]]*/, "", sql)
-  gsub(/[{}]/,"",sql)   # remove {}
-  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/,"",sql) # remove (?,?)
+  gsub(/[{}]/,"",sql)
+  gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/,"",sql)
   sql=trim(sql)
   next
 }
 
-# Capture parameters and write SQL file
+# Process Parameters
 /Parameters:/ && sql != "" {
   file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
@@ -39,17 +38,17 @@ BEGIN { idx=1 }
     raw = trim(arr[i])
     val = raw
 
-    # remove type annotation (String, Long, BigDecimal)
-    sub(/\([^)]+\)$/, "", val)
+    # remove type annotation
+    sub(/\([^)]+\)$/,"",val)
     val = trim(val)
 
-    if(tolower(val)=="null") {
-      val_out="NULL"
+    if(tolower(val) == "null") {
+      val_out = "NULL"
     } else if(is_number(val)) {
-      val_out=normalize(val)
+      val_out = normalize(val)
     } else {
-      gsub(/'\''/,"''''", val)   # escape single quotes
-      val_out="'" val "'"
+      gsub(/'\''/,"''''",val)      # escape single quotes inside string
+      val_out = sprintf("'%s'", val)  # safe string quoting
     }
 
     vals = vals (i==1?"":", ") val_out
