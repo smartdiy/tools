@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 
 # Usage:
-#   ./mybatis_log_to_sql.sh application.log > replay.sql
+#   ./mybatis_log_split_sql.sh application.log sql_out
 
 LOG_FILE="$1"
+OUT_DIR="$2"
 
-if [ $# -ne 1 ] || [ ! -f "$LOG_FILE" ]; then
-  echo "Usage: $0 mybatis.log"
+if [ $# -ne 2 ] || [ ! -f "$LOG_FILE" ]; then
+  echo "Usage: $0 mybatis.log output_dir"
   exit 1
 fi
 
-awk '
+mkdir -p "$OUT_DIR"
+
+awk -v outdir="$OUT_DIR" '
 # -------- helpers --------
 function trim(s) {
   gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
@@ -29,6 +32,11 @@ function normalize(v) {
   return (v ~ /[eE]/) ? (v + 0) : v
 }
 
+# -------- init --------
+BEGIN {
+  idx = 1
+}
+
 # -------- capture SQL --------
 /Preparing:/ {
   sql = $0
@@ -36,30 +44,28 @@ function normalize(v) {
   next
 }
 
-# -------- capture params & emit --------
+# -------- capture params & write file --------
 /Parameters:/ && sql != "" {
+  file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
   sub(/.*Parameters:[[:space:]]*/, "", line)
 
   n = split(line, a, ", ")
 
-  print sql
+  print sql > file
 
   for (i = 1; i <= n; i++) {
     entry = trim(a[i])
 
-    # null
     if (tolower(entry) == "null") {
-      printf "%s@p%d = NULL\n", (i==1?" ":" ,"), i
+      printf "%s@p%d = NULL\n", (i==1?" ":" ,"), i >> file
       continue
     }
 
-    # extract type
     type = entry
     sub(/^.*\(/, "", type)
     sub(/\)$/, "", type)
 
-    # extract value
     val = entry
     sub(/\([^)]+\)$/, "", val)
     val = trim(val)
@@ -71,12 +77,12 @@ function normalize(v) {
       val = normalize(val)
     }
 
-    printf "%s@p%d = %s\n", (i==1?" ":" ,"), i, val
+    printf "%s@p%d = %s\n", (i==1?" ":" ,"), i, val >> file
   }
 
-  print ";"
-  print ""
+  print ";" >> file
 
+  close(file)
   sql = ""
 }
 ' "$LOG_FILE"
