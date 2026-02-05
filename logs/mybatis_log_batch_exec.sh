@@ -30,13 +30,13 @@ BEGIN { idx = 1 }
 /Preparing:/ {
   sql = $0
   sub(/.*Preparing:[[:space:]]*/, "", sql)
-  gsub(/[{}]/, "", sql)                      # remove {}
+  gsub(/[{}]/, "", sql)                       # remove {}
   gsub(/\([[:space:]]*\?[[:space:]]*(,[[:space:]]*\?)*[[:space:]]*\)/, "", sql) # remove placeholders
   sql = trim(sql)
   next
 }
 
-# Capture Parameters and write file
+# Capture parameters and write file
 /Parameters:/ && sql != "" {
   file = sprintf("%s/exec_%03d.sql", outdir, idx++)
   line = $0
@@ -45,13 +45,15 @@ BEGIN { idx = 1 }
 
   vals = ""
   for (i = 1; i <= n; i++) {
-    val = trim(a[i])
-    if (tolower(val) == "null") {
+    raw = trim(a[i])
+
+    # null
+    if (tolower(raw) == "null") {
       val_out = "NULL"
     } else {
       # remove type annotation like (String), (Long), (BigDecimal)
-      sub(/\([^)]+\)$/, "", val)
-      val = trim(val)
+      sub(/\([^)]+\)$/, "", raw)
+      val = trim(raw)
 
       if (is_number(val)) {
         val_out = normalize(val)
@@ -60,12 +62,11 @@ BEGIN { idx = 1 }
         val_out = "'" val "'"
       }
     }
+
     vals = vals (i==1?"":", ") val_out
   }
 
-  # Write SQL WITHOUT parentheses, just values space/comma-separated
   print sql " " vals ";" > file
-
   close(file)
   sql = ""
 }
