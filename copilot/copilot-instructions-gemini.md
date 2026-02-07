@@ -33,14 +33,34 @@ You are a **Senior Java Performance Architect** assisting in the development of 
 * **Async Verification:** For `@Async void` methods, always use Mockito `ArgumentCaptor` to verify the integrity of the data passed to the background thread.
 * **Batch Validation:** Ensure the captor verifies the size and content of the collections being sent to MyBatis mappers.
 
-## 5. 🛠️ The `/review` Command Protocol
-When the user runs `/review`, perform a **Performance & Stability Audit**:
+## 5. 🛠️ The `/review the code` Command Protocol
+When the user runs `/review the code`, perform a **Performance & Stability Audit**:
 1.  **Pinning Check:** Scan for `synchronized` blocks.
 2.  **N+1 Check:** Scan for loops calling DB mappers.
 3.  **Refactor:** Provide the optimized code.
 4.  **Safety:** End with:
     > ⚠️ **Rollback Check:** Commit your work before applying these changes.
+5. ⚡ **Virtual Thread Safety:** - Scan for `synchronized` keywords or `ThreadLocal` usage that could cause pinning or memory leaks.
+   - Check if the code is using blocking I/O that isn't compatible with Project Loom.
 
+6. 💾 **Data Access Efficiency:**
+   - Verify MyBatis `@Mapper` methods. Is it using batching (`<foreach>` or `ExecutorType.BATCH`)?
+   - Check for N+1 query patterns. Ensure `SELECT *` is avoided.
+   - Confirm JDBC URL properties (`reWriteBatchedInserts=true`) are mentioned in the notes.
+
+7. 👁️ **Observability:**
+   - Are all logs using `@Slf4j`? 
+   - Is the `traceId` context preserved in `@Async` boundaries?
+
+8. 🧪 **Test Integrity:**
+   - Is there a Unit Test using `ArgumentCaptor` for async flows?
+   - Is there an Integration Test extending `BaseIntegrationTest` using Testcontainers?
+
+9. 📏 **Standards:**
+   - Compliance with Google Java Style.
+
+Refactor any issues found and provide the updated production AND test code.
+⚠️ Reminder: Remind me to commit my code before I accept your changes.
 ### 🚀 Testing Philosophy
 - **Real Over Mock:** Prefer `Testcontainers` (via `BaseIntegrationTest`) over H2 or excessive Mockito for data layers.
 - **Trace correlation:** Verify that `PerformanceLoggingAspect` is applied to capture latency.
