@@ -1,29 +1,44 @@
-package com.performance.aspect;
+package com.performance.config;
 
+import io.micrometer.tracing.Tracer;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.stereotype.Component;
 
+import java.util.Optional;
+
 @Aspect
 @Component
 @Slf4j
+@RequiredArgsConstructor
 public class PerformanceLoggingAspect {
 
-    @Around("execution(* com.performance.service..*(..))")
-    public Object logPerformance(ProceedingJoinPoint joinPoint) throws Throwable {
-        long start = System.nanoTime();
-        // traceId is automatically handled by MDC + Micrometer Bridge
+    private final Tracer tracer; // Autowired from Micrometer Tracing
+
+    @Around("execution(* com.performance.service..*(..)) || execution(* com.performance.mapper..*(..))")
+    public Object trackTimeAndTrace(ProceedingJoinPoint joinPoint) throws Throwable {
+        long start = System.currentTimeMillis();
+        
+        // Extract Trace ID from current context
+        String traceId = Optional.ofNullable(tracer.currentSpan())
+                .map(span -> span.context().traceId())
+                .orElse("no-trace-id");
+
         try {
             return joinPoint.proceed();
         } finally {
-            long duration = (System.nanoTime() - start) / 1_000_000;
-            // Only log if slow (> 50ms) to reduce noise in high-throughput systems
-            if (duration > 50) {
-                log.warn("⚠️ Slow Method: {} | Duration: {}ms", joinPoint.getSignature().toShortString(), duration);
+            long executionTime = System.currentTimeMillis() - start;
+            
+            // Focus on performance: only warn if execution is slow
+            if (executionTime > 200) {
+                log.warn("[PERF-ALERT] TraceID: {} | Method: {} | Execution Time: {}ms", 
+                    traceId, joinPoint.getSignature().toShortString(), executionTime);
             } else {
-                log.debug("✅ Method: {} | Duration: {}ms", joinPoint.getSignature().toShortString(), duration);
+                log.debug("TraceID: {} | Method: {} | Execution Time: {}ms", 
+                    traceId, joinPoint.getSignature().toShortString(), executionTime);
             }
         }
     }
