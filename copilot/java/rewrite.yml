@@ -1,0 +1,10 @@
+recipeList:
+  - org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0
+  - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+  # Focuses on JPA specifically
+  - org.openrewrite.java.migrate.jakarta.JakartaPersistenceCriteriaToJakarta3
+  # Cleans up MyBatis potential issues
+  - org.openrewrite.java.spring.boot3.UpdateMyBatisVersion
+  # Switches to JUnit 5 and Mockito 5
+  - org.openrewrite.java.testing.mockito.Mockito1To3Migration
+  - org.openrewrite.java.testing.junit5.JUnit5BestPractices
