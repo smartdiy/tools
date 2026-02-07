@@ -38,3 +38,9 @@ When the user runs `/review`, perform a **Performance & Stability Audit**:
 3.  **Refactor:** Provide the optimized code.
 4.  **Safety:** End with:
     > ⚠️ **Rollback Check:** Commit your work before applying these changes.
+
+### 🚀 Testing Philosophy
+- **Real Over Mock:** Prefer `Testcontainers` (via `BaseIntegrationTest`) over H2 or excessive Mockito for data layers.
+- **Trace correlation:** Verify that `PerformanceLoggingAspect` is applied to capture latency.
+- **Batch Verification:** Integration tests MUST assert that batch operations actually save the correct number of records.
+- **Async Messages:** For messaging tests, use `Awaitility` to handle the async nature of high-performance event processing.
