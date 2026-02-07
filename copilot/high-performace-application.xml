@@ -1,0 +1,14 @@
+spring:
+  threads:
+    virtual:
+      enabled: true  # ⚡ Activates Java 21 Virtual Threads
+  datasource:
+    # 🚀 Performance Hack: Rewrite Batched Statements
+    url: jdbc:postgresql://localhost:5432/mydb?reWriteBatchedInserts=true
+    hikari:
+      maximum-pool-size: 20 # Lower pool size is often better with Virtual Threads
+  
+logging:
+  pattern:
+    # 👁️ Includes TraceID and SpanID in every log line
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] [%X{traceId:-},%X{spanId:-}] %-5level %logger{36} - %msg%n"
