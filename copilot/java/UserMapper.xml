@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" 
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.performance.mapper.UserMapper">
+
+    <insert id="insertBatch" parameterType="java.util.List">
+        INSERT INTO users (username, email, created_at)
+        VALUES
+        <foreach collection="users" item="user" separator=",">
+            (#{user.username}, #{user.email}, NOW())
+        </foreach>
+    </insert>
+
+    <insert id="insert" parameterType="com.performance.model.UserEntity">
+        INSERT INTO users (username, email, created_at)
+        VALUES (#{username}, #{email}, NOW())
+    </insert>
+
+</mapper>
