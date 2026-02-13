@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 5s # High frequency for your demo to see charts move fast
+  evaluation_interval: 5s
+
+scrape_configs:
+  # 1. THE OTLP COLLECTOR
+  # This is the most important job. It pulls the metrics that your 
+  # IntelliJ App and HotROD pushed into the Collector.
+  - job_name: 'otel-collector'
+    static_configs:
+      - targets: ['otel-collector:8889'] # Matches the 'prometheus' exporter in otel-config
+
+  # 2. PROMETHEUS SELF-MONITORING
+  # Monitor Prometheus itself to ensure it is healthy.
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # 3. (OPTIONAL) DIRECT JAEGER MONITORING
+  # If you want to see how much memory Jaeger is using.
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['jaeger:14269'] # Jaeger's internal metrics port
