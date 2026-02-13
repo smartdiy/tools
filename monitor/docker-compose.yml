@@ -48,7 +48,7 @@ demo-app:
     - OTEL_LOGS_EXPORTER=otlp
     - OTEL_METRICS_EXPORTER=otlp
     # Plug-in: Instrument specific service classes
-    - OTEL_INSTRUMENTATION_METHODS_INCLUDE=com.example.demo.service.BusinessService[*]
+    - OTEL_INSTRUMENTATION_METHODS_INCLUDE=com.example.service.OrderService[*];com.example.service.UserService[find*,save*];com.example.utils.Calc[execute]
   depends_on:
     otel-collector:
       condition: service_healthy # App waits for Collector to be 100% ready
