@@ -34,3 +34,23 @@ services:
 networks:
   otel-network:
     driver: bridge
+
+# 2. THE JAVA APP (The Source)
+demo-app:
+  build: ./demo-app
+  container_name: demo-app
+  ports:
+    - "8080:8080"
+  environment:
+    - OTEL_SERVICE_NAME=architect-demo
+    - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+    - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+    - OTEL_LOGS_EXPORTER=otlp
+    - OTEL_METRICS_EXPORTER=otlp
+    # Plug-in: Instrument specific service classes
+    - OTEL_INSTRUMENTATION_METHODS_INCLUDE=com.example.demo.service.BusinessService[*]
+  depends_on:
+    otel-collector:
+      condition: service_healthy # App waits for Collector to be 100% ready
+  networks:
+    - otel-network
