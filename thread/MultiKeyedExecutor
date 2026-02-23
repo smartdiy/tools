@@ -1,0 +1,150 @@
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * MultiKeyedExecutor: A high-throughput, non-blocking executor supporting multi-key dependencies.
+ *
+ * 💡 DESIGN PRINCIPLE:
+ * This executor builds a dynamic Directed Acyclic Graph (DAG) of tasks using CompletableFutures.
+ * Instead of worker threads blocking on locks, tasks are scheduled to the thread pool
+ * ONLY when all their prerequisite tasks (sharing the same keys) have finished.
+ *
+ * Performance:
+ * - Throughput scales linearly with disjoint keys.
+ * - Single-key tasks use atomic map operations (compute) to avoid global lock contention.
+ * - Multi-key tasks use a short-lived sync block to ensure atomic cross-key ordering.
+ */
+public class MultiKeyedExecutor implements AutoCloseable {
+    private final ExecutorService executor;
+
+    /**
+     * keyLastFutures: Maps each key to the "tail" of its execution chain.
+     * Every new task for a key 'K' attaches itself to the current future in the map for 'K'.
+     */
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> keyLastFutures = new ConcurrentHashMap<>();
+    private final AtomicBoolean running = new AtomicBoolean(true);
+
+    public MultiKeyedExecutor(int threadCount) {
+        this.executor = new ThreadPoolExecutor(
+                threadCount, threadCount,
+                0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(),
+                r -> {
+                    Thread t = new Thread(r, "multi-keyed-worker");
+                    t.setDaemon(false);
+                    return t;
+                }
+        );
+    }
+
+
+    /**
+     * Submits a task associated with multiple keys.
+     * The task is guaranteed to run after all previously submitted tasks sharing any of these keys.
+     */
+    public CompletableFuture<Void> submit(Collection<String> keys, Runnable task) {
+        if (!running.get()) {
+            throw new RejectedExecutionException("Executor is shutting down");
+        }
+
+        if (keys == null || keys.isEmpty()) {
+            return CompletableFuture.runAsync(task, executor);
+        }
+
+        // Optimization: Single-key path uses lock-free 'compute' on the ConcurrentHashMap
+        if (keys.size() == 1) {
+            String key = keys.iterator().next();
+            return submitSingleKey(key, task);
+        }
+
+        return submitMultiKey(keys, task);
+    }
+
+    private CompletableFuture<Void> submitSingleKey(String key, Runnable task) {
+        return keyLastFutures.compute(key, (k, previousTail) -> {
+            CompletableFuture<Void> current;
+            // If no previous task or it's already done, start fresh
+            if (previousTail == null || previousTail.isDone()) {
+                current = CompletableFuture.runAsync(task, executor);
+            } else {
+                // Otherwise, chain to the tail. handleAsync ensures execution
+                // even if the previous task failed or was cancelled.
+                current = previousTail.handleAsync((v, t) -> {
+                    task.run();
+                    return null;
+                }, executor);
+            }
+
+            // Memory Management: Remove from map once finished to prevent leaks from dynamic keys.
+            // We use remove(key, value) to ensure we only remove it if it's still the tail.
+            current.thenRun(() -> keyLastFutures.remove(key, current));
+            return current;
+        });
+    }
+
+    private CompletableFuture<Void> submitMultiKey(Collection<String> keys, Runnable task) {
+        // Global sync on the map ensures that two multi-key tasks arriving
+        // simultaneously are assigned a deterministic order.
+        synchronized (keyLastFutures) {
+            List<CompletableFuture<Void>> dependencies = new ArrayList<>(keys.size());
+            for (String key : keys) {
+                CompletableFuture<Void> dep = keyLastFutures.get(key);
+                if (dep != null && !dep.isDone()) {
+                    dependencies.add(dep);
+                }
+            }
+
+            // Combine all tail futures into a single dependency
+            CompletableFuture<Void> combinedDependency;
+            if (dependencies.isEmpty()) {
+                combinedDependency = CompletableFuture.completedFuture(null);
+            } else if (dependencies.size() == 1) {
+                combinedDependency = dependencies.get(0);
+            } else {
+                combinedDependency = CompletableFuture.allOf(dependencies.toArray(new CompletableFuture[0]));
+            }
+
+            // Schedule the task to run once ALL dependencies are resolved
+            CompletableFuture<Void> current = combinedDependency.handleAsync((v, t) -> {
+                task.run();
+                return null;
+            }, executor);
+
+            // Update the tail for all involved keys to point to this new task
+            for (String key : keys) {
+                keyLastFutures.put(key, current);
+            }
+
+            // Cleanup tails once finished
+            current.thenRun(() -> {
+                synchronized (keyLastFutures) {
+                    for (String key : keys) {
+                        keyLastFutures.remove(key, current);
+                    }
+                }
+            });
+
+            return current;
+        }
+    }
+
+    public CompletableFuture<Void> submit(String key, Runnable task) {
+        return submit(Collections.singletonList(key), task);
+    }
+
+    @Override
+    public void close() {
+        if (running.compareAndSet(true, false)) {
+            executor.shutdown();
+            try {
+                if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
+                    executor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                executor.shutdownNow();
+            }
+        }
+    }
+}
