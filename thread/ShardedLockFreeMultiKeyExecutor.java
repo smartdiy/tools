@@ -1,227 +1,289 @@
+package executor.v6;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.LongAdder;
 
-public class ShardedLockFreeMultiKeyExecutor implements AutoCloseable {
+public class ShardedLockFreeMultiKeyExecutor {
 
-    private static final class Node {
+    public static final String VERSION = "6.2-MURMUR-FASTPATH-ISOLATED";
+
+    // =============================
+    // Murmur3 32-bit
+    // =============================
+    static final class Murmur3 {
+        static int hash32(byte[] data, int seed) {
+            final int c1 = 0xcc9e2d51;
+            final int c2 = 0x1b873593;
+
+            int h1 = seed;
+            ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+
+            while (buffer.remaining() >= 4) {
+                int k1 = buffer.getInt();
+                k1 *= c1;
+                k1 = Integer.rotateLeft(k1, 15);
+                k1 *= c2;
+
+                h1 ^= k1;
+                h1 = Integer.rotateLeft(h1, 13);
+                h1 = h1 * 5 + 0xe6546b64;
+            }
+
+            int k1 = 0;
+            int remaining = buffer.remaining();
+            for (int i = 0; i < remaining; i++) {
+                k1 ^= (buffer.get() & 0xff) << (i * 8);
+            }
+
+            if (remaining > 0) {
+                k1 *= c1;
+                k1 = Integer.rotateLeft(k1, 15);
+                k1 *= c2;
+                h1 ^= k1;
+            }
+
+            h1 ^= data.length;
+            h1 ^= (h1 >>> 16);
+            h1 *= 0x85ebca6b;
+            h1 ^= (h1 >>> 13);
+            h1 *= 0xc2b2ae35;
+            h1 ^= (h1 >>> 16);
+
+            return h1;
+        }
+    }
+
+    static final class Node {
         final Runnable task;
-        final CompletableFuture<Void> future;
-
-        Node(Runnable task) {
-            this.task = task;
-            this.future = new CompletableFuture<>();
-        }
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+        Node(Runnable task) { this.task = task; }
     }
 
-    // ================= Shard Structure =================
-
-    private static final class Shard {
-
-        final ConcurrentHashMap<String, AtomicReference<Node>> tails =
-                new ConcurrentHashMap<>();
-
+    static final class Shard {
+        final ConcurrentHashMap<Object, AtomicReference<Node>> tails = new ConcurrentHashMap<>();
         final ExecutorService worker;
-
-        Shard(ExecutorService worker) {
-            this.worker = worker;
-        }
+        Shard(ExecutorService worker) { this.worker = worker; }
     }
 
-    private final Shard[] shards;
+    private final List<Shard> shards;
+    private final int shardMask;
+    private final AtomicInteger roundRobin = new AtomicInteger();
 
-    private final AtomicBoolean running = new AtomicBoolean(true);
-
-    // Metrics
-    private final LongAdder submissionCount = new LongAdder();
-    private final LongAdder retryCount = new LongAdder();
+    // Metrics (6 LongAdder)
+    private final LongAdder submittedCount = new LongAdder();
     private final LongAdder executionCount = new LongAdder();
+    private final LongAdder failureCount = new LongAdder();
+    private final LongAdder retryCount = new LongAdder();
+    private final LongAdder queueDepth = new LongAdder();
+    private final LongAdder activeTasks = new LongAdder();
 
-    // ================= Constructor =================
+    public ShardedLockFreeMultiKeyExecutor(int shardCount) {
+        if (Integer.bitCount(shardCount) != 1) {
+            throw new IllegalArgumentException("Shard count must be power of two");
+        }
 
-    public ShardedLockFreeMultiKeyExecutor(int threadsPerShard) {
-
-        int cpu = Runtime.getRuntime().availableProcessors();
-        int shardCount = Math.max(2, cpu);
-
-        this.shards = new Shard[shardCount];
+        this.shards = new ArrayList<>(shardCount);
+        this.shardMask = shardCount - 1;
 
         for (int i = 0; i < shardCount; i++) {
-
-            ExecutorService worker = new ThreadPoolExecutor(
-                    threadsPerShard,
-                    threadsPerShard,
-                    0L,
-                    TimeUnit.MILLISECONDS,
-                    new ArrayBlockingQueue<>(10000),
-                    namedThreadFactory("dag-shard-" + i),
-                    new ThreadPoolExecutor.CallerRunsPolicy()
-            );
-
-            shards[i] = new Shard(worker);
+            int index = i;
+            ExecutorService worker =
+                    Executors.newSingleThreadExecutor(r -> new Thread(r, "shard-" + index));
+            shards.add(new Shard(worker));
         }
     }
 
-    private int shardIndex(String key) {
-        return Math.abs(key.hashCode()) % shards.length;
-    }
+    public CompletableFuture<Void> submit(Collection<?> keys, Runnable task) {
+        Objects.requireNonNull(keys);
+        Objects.requireNonNull(task);
 
-    private static ThreadFactory namedThreadFactory(String base) {
-        ThreadFactory def = Executors.defaultThreadFactory();
-        AtomicInteger counter = new AtomicInteger(1);
+        submittedCount.increment();
 
-        return r -> {
-            Thread t = def.newThread(r);
-            t.setName(base + "-" + counter.getAndIncrement());
-            return t;
-        };
-    }
+        int size = keys.size();
 
-    // ================= Public API =================
-
-    public CompletableFuture<Void> submit(String key, Runnable task) {
-        return submit(Collections.singletonList(key), task);
-    }
-
-    public CompletableFuture<Void> submit(Collection<String> keys, Runnable task) {
-
-        if (!running.get()) {
-            throw new RejectedExecutionException();
+        if (size == 0) {
+            return submitZeroKey(task);
         }
 
-        submissionCount.increment();
-
-        List<String> unique = new ArrayList<>(new HashSet<>(keys));
-        unique.sort(Comparator.naturalOrder());
-
-        if (unique.size() == 1) {
-            return submitSingle(unique.get(0), task);
+        if (size == 1) {
+            return submitSingleKey(keys.iterator().next(), task);
         }
 
-        return submitMulti(unique, task);
+        return submitMultiKey(keys, task);
     }
 
-    // ================= Single Key Fast Path =================
+    // =============================
+    // ZERO KEY (round-robin)
+    // =============================
+    private CompletableFuture<Void> submitZeroKey(Runnable task) {
+        int index = roundRobin.getAndIncrement() & shardMask;
+        Shard shard = shards.get(index);
 
-    private CompletableFuture<Void> submitSingle(String key, Runnable task) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        activeTasks.increment();
 
-        Shard shard = shards[shardIndex(key)];
-        AtomicReference<Node> tailRef =
-                shard.tails.computeIfAbsent(key,
-                        k -> new AtomicReference<>(null));
-
-        while (true) {
-
-            Node prev = tailRef.get();
-
-            Node newNode = new Node(task);
-
-            if (tailRef.compareAndSet(prev, newNode)) {
-
-                CompletableFuture<Void> dependency =
-                        prev == null ? CompletableFuture.completedFuture(null)
-                                : prev.future;
-
-                dependency.whenCompleteAsync((v, ex) -> {
-
-                    if (ex != null) {
-                        newNode.future.completeExceptionally(ex);
-                        return;
-                    }
-
-                    try {
-                        task.run();
-                        executionCount.increment();
-                        newNode.future.complete(null);
-                    } catch (Throwable t) {
-                        newNode.future.completeExceptionally(t);
-                    }
-
-                }, shard.worker);
-
-                return newNode.future;
+        shard.worker.execute(() -> {
+            try {
+                task.run();
+                executionCount.increment();
+                future.complete(null);
+            } catch (Throwable t) {
+                failureCount.increment();
+                future.completeExceptionally(t);
+            } finally {
+                activeTasks.decrement();
             }
+        });
 
+        return future;
+    }
+
+    // =============================
+    // SINGLE KEY
+    // =============================
+    private CompletableFuture<Void> submitSingleKey(Object key, Runnable task) {
+
+        Shard shard = shardFor(key);
+
+        AtomicReference<Node> ref =
+                shard.tails.computeIfAbsent(key, k -> new AtomicReference<>());
+
+        Node prev = ref.get();
+        Node newNode = new Node(task);
+
+        while (!ref.compareAndSet(prev, newNode)) {
             retryCount.increment();
+            prev = ref.get();
         }
+
+        queueDepth.increment();
+
+        CompletableFuture<Void> dependency =
+                prev == null ? CompletableFuture.completedFuture(null) : prev.future;
+
+        dependency.whenCompleteAsync((v, ex) -> {
+            queueDepth.decrement();
+            activeTasks.increment();
+
+            try {
+                if (ex != null) {
+                    failureCount.increment();
+                    newNode.future.completeExceptionally(ex);
+                    return;
+                }
+
+                task.run();
+                executionCount.increment();
+                newNode.future.complete(null);
+            } catch (Throwable t) {
+                failureCount.increment();
+                newNode.future.completeExceptionally(t);
+            } finally {
+                activeTasks.decrement();
+            }
+        }, shard.worker);
+
+        return newNode.future;
     }
 
-    // ================= Multi-Key Path =================
+    // =============================
+    // MULTI KEY
+    // =============================
+    private CompletableFuture<Void> submitMultiKey(Collection<?> keys, Runnable task) {
 
-    private CompletableFuture<Void> submitMulti(List<String> keys, Runnable task) {
+        List<Shard> shardList = new ArrayList<>();
+        List<AtomicReference<Node>> refs = new ArrayList<>();
+        List<Node> prevNodes = new ArrayList<>();
 
-        while (true) {
+        for (Object key : keys) {
+            Shard shard = shardFor(key);
+            shardList.add(shard);
 
-            List<Shard> shardList = new ArrayList<>();
-            List<AtomicReference<Node>> refs = new ArrayList<>();
-            List<Node> prevNodes = new ArrayList<>();
+            AtomicReference<Node> ref =
+                    shard.tails.computeIfAbsent(key, k -> new AtomicReference<>());
 
-            for (String key : keys) {
+            refs.add(ref);
+            prevNodes.add(ref.get());
+        }
 
-                Shard shard = shards[shardIndex(key)];
+        Node newNode = new Node(task);
 
-                AtomicReference<Node> ref =
-                        shard.tails.computeIfAbsent(key,
-                                k -> new AtomicReference<>(null));
-
-                shardList.add(shard);
-                refs.add(ref);
-                prevNodes.add(ref.get());
-            }
-
-            Node newNode = new Node(task);
-
-            // CAS commit
-            boolean success = true;
-
+        boolean success = false;
+        while (!success) {
+            success = true;
             for (int i = 0; i < refs.size(); i++) {
-
                 if (!refs.get(i).compareAndSet(prevNodes.get(i), newNode)) {
+                    retryCount.increment();
+                    prevNodes.set(i, refs.get(i).get());
                     success = false;
                     break;
                 }
             }
+        }
 
-            if (!success) {
-                retryCount.increment();
-                continue;
-            }
+        queueDepth.increment();
 
-            CompletableFuture<?>[] deps =
-                    prevNodes.stream()
-                            .map(n -> n == null ?
-                                    CompletableFuture.completedFuture(null)
-                                    : n.future)
-                            .toArray(CompletableFuture[]::new);
+        CompletableFuture<?>[] deps = prevNodes.stream()
+                .filter(Objects::nonNull)
+                .map(n -> n.future)
+                .toArray(CompletableFuture[]::new);
 
-            CompletableFuture.allOf(deps)
-                    .whenCompleteAsync((v, ex) -> {
+        CompletableFuture.allOf(deps)
+                .whenCompleteAsync((v, ex) -> {
+                    queueDepth.decrement();
+                    activeTasks.increment();
 
+                    try {
                         if (ex != null) {
+                            failureCount.increment();
                             newNode.future.completeExceptionally(ex);
                             return;
                         }
 
-                        try {
-                            task.run();
-                            executionCount.increment();
-                            newNode.future.complete(null);
-                        } catch (Throwable t) {
-                            newNode.future.completeExceptionally(t);
-                        }
+                        task.run();
+                        executionCount.increment();
+                        newNode.future.complete(null);
+                    } catch (Throwable t) {
+                        failureCount.increment();
+                        newNode.future.completeExceptionally(t);
+                    } finally {
+                        activeTasks.decrement();
+                    }
+                }, shardList.get(0).worker);
 
-                    }, shardList.get(0).worker);
-
-            return newNode.future;
-        }
+        return newNode.future;
     }
 
-    // ================= Lifecycle =================
+    private Shard shardFor(Object key) {
+        int hash = Murmur3.hash32(key.toString().getBytes(), 0);
+        return shards.get(hash & shardMask);
+    }
 
-    @Override
-    public void close() {
-        running.set(false);
+    public Map<String, Long> metrics() {
+        Map<String, Long> m = new LinkedHashMap<>();
+        m.put("submitted", submittedCount.sum());
+        m.put("executed", executionCount.sum());
+        m.put("failed", failureCount.sum());
+        m.put("retry", retryCount.sum());
+        m.put("queueDepth", queueDepth.sum());
+        m.put("activeTasks", activeTasks.sum());
+        return m;
+    }
 
+    public void resetMetrics() {
+        submittedCount.reset();
+        executionCount.reset();
+        failureCount.reset();
+        retryCount.reset();
+        queueDepth.reset();
+        activeTasks.reset();
+    }
+
+    public void shutdown() {
         for (Shard shard : shards) {
             shard.worker.shutdown();
         }
