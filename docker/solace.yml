@@ -1,0 +1,74 @@
+services:
+  solace:
+    image: solace/solace-pubsub-standard
+    container_name: solace
+    hostname: solace
+    restart: unless-stopped
+    shm_size: 1g
+    ulimits:
+      nofile:
+        soft: 2448
+        hard: 42192
+    ports:
+      - "8080:8080"
+      - "55555:55555"
+      - "5672:5672"
+      - "1883:1883"
+    environment:
+      username_admin_globalaccesslevel: admin
+      username_admin_password: ${SOLACE_ADMIN_PASS}
+    volumes:
+      - solace-data:/var/lib/solace
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/SEMP/v2/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  solace-init:
+    image: curlimages/curl:latest
+    depends_on:
+      solace:
+        condition: service_healthy
+    env_file:
+      - .env
+    entrypoint: >
+      sh -c "
+      echo 'Bootstrapping Solace...' &&
+
+      # Create VPN (idempotent)
+      curl -u ${SOLACE_ADMIN_USER}:${SOLACE_ADMIN_PASS} -X POST \
+      http://solace:8080/SEMP/v2/config/msgVpns \
+      -H 'Content-Type: application/json' \
+      -d '{\"msgVpnName\":\"'${SOLACE_VPN}'\",\"enabled\":true}' || true &&
+
+      # Create Client Username
+      curl -u ${SOLACE_ADMIN_USER}:${SOLACE_ADMIN_PASS} -X POST \
+      http://solace:8080/SEMP/v2/config/msgVpns/'${SOLACE_VPN}'/clientUsernames \
+      -H 'Content-Type: application/json' \
+      -d '{\"clientUsername\":\"'${SOLACE_APP_USER}'\",\"enabled\":true,\"password\":\"'${SOLACE_APP_PASS}'\"}' || true &&
+
+      # Create Queue
+      curl -u ${SOLACE_ADMIN_USER}:${SOLACE_ADMIN_PASS} -X POST \
+      http://solace:8080/SEMP/v2/config/msgVpns/'${SOLACE_VPN}'/queues \
+      -H 'Content-Type: application/json' \
+      -d '{\"queueName\":\"'${SOLACE_QUEUE}'\",\"accessType\":\"exclusive\",\"egressEnabled\":true,\"ingressEnabled\":true}' || true &&
+
+      # Bind Topic
+      curl -u ${SOLACE_ADMIN_USER}:${SOLACE_ADMIN_PASS} -X POST \
+      http://solace:8080/SEMP/v2/config/msgVpns/'${SOLACE_VPN}'/queues/'${SOLACE_QUEUE}'/subscriptions \
+      -H 'Content-Type: application/json' \
+      -d '{\"subscriptionTopic\":\"'${SOLACE_TOPIC}'\"}' || true &&
+
+      # Assign default profile
+      curl -u ${SOLACE_ADMIN_USER}:${SOLACE_ADMIN_PASS} -X PATCH \
+      http://solace:8080/SEMP/v2/config/msgVpns/'${SOLACE_VPN}'/clientUsernames/'${SOLACE_APP_USER}' \
+      -H 'Content-Type: application/json' \
+      -d '{\"aclProfileName\":\"default\",\"clientProfileName\":\"default\"}' || true &&
+
+      echo 'Solace lab ready.'
+      "
+    restart: "no"
+
+volumes:
+  solace-data:
