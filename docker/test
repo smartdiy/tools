@@ -8,3 +8,43 @@ RUN echo "const { File } = require('formdata-node'); \
 
 
 docker run --rm copilot-proxy node -e "console.log(require.resolve('copilot-api'))"
+
+
+# Use base image from your private container registry
+FROM registry.example.com/node:18-slim
+
+# ---------- Certificate Trust ----------
+COPY registry-ca.crt /usr/local/share/ca-certificates/registry-ca.crt
+# Force-add to system bundle (bypass update-ca-certificates issues)
+RUN cat /usr/local/share/ca-certificates/registry-ca.crt >> /etc/ssl/certs/ca-certificates.crt
+ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/registry-ca.crt
+
+# ---------- npm Configuration ----------
+ARG NPM_REGISTRY
+ARG NPM_TOKEN
+RUN npm config set registry ${NPM_REGISTRY} && \
+    npm config set cafile /usr/local/share/ca-certificates/registry-ca.crt && \
+    if [ -n "$NPM_TOKEN" ]; then \
+        echo "//${NPM_REGISTRY#http*://}/:_authToken=${NPM_TOKEN}" >> ~/.npmrc; \
+    fi
+
+# ---------- Install Packages ----------
+WORKDIR /app
+
+# Install with verbose logging; capture any errors
+RUN npm install --loglevel verbose formdata-node && \
+    npm install --loglevel verbose copilot-api@latest
+
+# Verify installation (build will fail if package missing)
+RUN test -d node_modules/copilot-api || (echo "❌ copilot-api not installed!" && exit 1)
+
+# ---------- Polyfill for File ----------
+RUN echo 'const { File } = require("formdata-node");\n\
+if (typeof global.File === "undefined") { global.File = File; }' > /app/polyfill.js
+ENV NODE_OPTIONS="--require /app/polyfill.js"
+
+# ---------- Entrypoint ----------
+RUN echo '#!/bin/sh\n\
+exec npx copilot-api "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["start", "--port", "4141", "--claude-code"]
