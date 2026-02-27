@@ -48,3 +48,19 @@ RUN echo '#!/bin/sh\n\
 exec npx copilot-api "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["start", "--port", "4141", "--claude-code"]
+
+
+FROM node:18-slim
+RUN npm install -g @anthropic-ai/claude-code
+WORKDIR /workspace
+
+# Script to set proxy environment variables
+RUN echo '#!/bin/bash\n\
+export ANTHROPIC_BASE_URL=http://copilot-proxy:4141/v1\n\
+export ANTHROPIC_API_KEY=copilot\n\
+echo "🔗 Proxy: $ANTHROPIC_BASE_URL"\n\
+echo "🤖 Starting Claude Code with Copilot models...\n"\n\
+exec claude "$@"' > /usr/local/bin/claude-copilot && \
+    chmod +x /usr/local/bin/claude-copilot
+
+CMD ["/usr/local/bin/claude-copilot"]
