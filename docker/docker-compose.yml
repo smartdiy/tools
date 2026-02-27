@@ -1,0 +1,48 @@
+version: '3.8'
+
+networks:
+  claude-network:
+    driver: bridge
+
+volumes:
+  copilot-config:
+    # Persists GitHub authentication token
+
+services:
+  copilot-proxy:
+    image: copilot-proxy
+    build:
+      context: .
+      dockerfile: proxy.Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.example.com}
+        NPM_TOKEN: ${NPM_TOKEN}
+    container_name: copilot-proxy
+    ports:
+      - "4141:4141"
+    environment:
+      - GH_TOKEN=${GH_TOKEN}   # optional, if you have a token
+    volumes:
+      - copilot-config:/root/.config/copilot-api
+    networks:
+      - claude-network
+    restart: unless-stopped
+
+  claude-agent:
+    image: claude-copilot
+    build:
+      context: .
+      dockerfile: claude.Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.example.com}
+        NPM_TOKEN: ${NPM_TOKEN}
+    container_name: claude-agent
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    volumes:
+      - .:/workspace   # mount current project directory
+    networks:
+      - claude-network
+    depends_on:
+      - copilot-proxy
