@@ -1,0 +1,7 @@
+# Install formdata-node for a robust File polyfill
+RUN npm install -g formdata-node
+
+# Create a polyfill that uses the library
+RUN echo "const { File } = require('formdata-node'); \
+  if (typeof global.File === 'undefined') global.File = File;" \
+  > /usr/local/lib/node_modules/copilot-api/polyfill.js
