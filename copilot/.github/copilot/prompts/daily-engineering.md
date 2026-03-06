@@ -152,3 +152,44 @@ Include:
 * refactor tasks
 * performance tasks
 * security tasks
+
+After completing analysis:
+
+1. Create a markdown report.
+2. Save it to:
+
+.ai-reports/daily/YYYY-MM-DD-engineering-report.md
+
+Report structure:
+
+# AI Engineering Report
+Date: YYYY-MM-DD
+
+## Architecture
+(content from #architecture)
+
+## Refactor Opportunities
+(content from #refactor)
+
+## Performance Findings
+(content from #performance)
+
+## Security Findings
+(content from #security)
+
+## Verification Results
+(content from #verification)
+
+## Engineering Summary
+(content from #documentation)
+
+## Daily Plan
+(content from #daily-plan)
+
+Include metadata in the report:
+
+Repository branch
+Git commit hash
+AI model used
+
+
