@@ -1,3 +1,16 @@
+# Maven Execution Authority
+
+Rule:
+
+- Implementor and Tester have full authority to execute Maven commands as needed to complete their task.
+- This includes:
+  - `mvn compile`, `mvn test`, `mvn package`, `mvn install`, etc.
+- No human approval or discussion is required for executing Maven commands.
+- All other workflow rules remain:
+  - Implementor ↔ Reviewer for design review
+  - Implementor ↔ Tester for testing iterations
+  - Architect, Auditor, Documentor phases continue as usual
+
 # /auto-dev
 
 Run the **AI Development Team workflow**.
@@ -143,6 +156,8 @@ Responsibilities:
 * design implementation strategy
 * define classes and modules
 * describe algorithms and logic
+* **Can execute Maven commands** as needed to build, compile, or verify code
+* Participate in design review iterations with Reviewer
 
 Output:
 
@@ -171,6 +186,8 @@ Rules:
 
 * Minimum **3 iterations**
 * Stop early if agreement is reached.
+* **Can execute Maven commands** as needed to build, compile, or verify code
+* Participate in design review iterations with Implementor
 
 Label iterations:
 
